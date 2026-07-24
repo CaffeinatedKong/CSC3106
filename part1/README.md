@@ -30,8 +30,8 @@ any comparable OpenSSH-style log to reuse the script.
 | `username_counts.csv` | Every username seen in a `Failed password` line, sorted by count |
 | `ip_overlap.csv` | Per-IP failed count, accepted count, whether that IP also appears in `Invalid user` lines, and how many reverse-DNS break-in warnings it triggered — supports checking whether a heavy-failure source ever succeeded, ever tried non-existent accounts, or was independently flagged by sshd itself |
 | `daily_failed_summary.csv` | Per-day total failed attempts, split into the top single contributing IP vs. all other sources that day |
-| `top_source_ips.png` | **Mandatory visualisation** — top 10 source IPs by failed password count |
-| `chosen_visualisation.png` | **Chosen visualisation** — daily timeline of failed attempts, split by top single source vs. all other sources |
+| `top_source_ips.png` | Top 10 source IPs by failed password count |
+| `chosen_visualisation.png` | Daily timeline of failed attempts, split by top single source vs. all other sources |
 
 ## Key decisions Made
 
