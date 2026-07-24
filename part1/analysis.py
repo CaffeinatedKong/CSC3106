@@ -5,20 +5,8 @@ CSC3106 Mini-Project Part 1 - Data-Driven Authentication Log Analysis
 Reads a raw OpenSSH-style auth log, extracts authentication events,
 usernames and source IPs, saves summary CSVs, and produces the two
 required visualisations:
-    1. output/top_source_ips.png      - top source IPs by failed auth (mandatory)
-    2. output/chosen_visualisation.png - daily timeline of failed attempts,
-                                          split by top single source vs all others
-
-Design follows the Lab 1-4 techniques:
-    - manual-inspection-informed regex patterns (Lab 1)
-    - keyword event counting + IP/username regex extraction (Lab 2)
-    - timestamp parsing + time-windowed timeline (Lab 3)
-    - CSV outputs structured to feed directly into the asset-focused
-      risk matrix (Lab 4)
-
-Usage:
-    python analysis.py                      # uses default LOG_FILE below
-    python analysis.py --log path/to/log     # or point at any comparable log
+    1. output/top_source_ips.png      - top source IPs by failed auth
+    2. output/chosen_visualisation.png - daily timeline of failed attempts, split by top single source vs all others
 """
 
 import re
@@ -29,33 +17,22 @@ from datetime import datetime
 from collections import Counter, defaultdict
 
 import matplotlib
-matplotlib.use("Agg")  # headless-safe backend, no display needed
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # --------------------------------------------------------------------------
-# CONFIGURATION (kept at the top so a reviewer can adapt this to a
-# comparable log without touching the logic below)
+# CONFIGURATION 
 # --------------------------------------------------------------------------
 
 DEFAULT_LOG_FILE = "4_auth_log.txt"
 OUTPUT_DIR = Path("output")
-
-# This teaching log omits the year in its timestamps (e.g. "Jul 06 00:01:27").
-# Python still needs a year internally to parse and sort timestamps, so this
-# assumed year is used ONLY inside datetime objects. Report-facing outputs
-# and figure labels intentionally omit the year to match the raw log format.
-# It will be WRONG if the real log spans a year boundary (e.g. Dec -> Jan).
 ASSUMED_YEAR = 2026
 
-TOP_N_IPS = 10  # how many source IPs to show in the mandatory bar chart
+TOP_N_IPS = 10  # Max source IPs to show in the mandatory bar chart
 
 IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
-# Username extraction patterns, IN PRIORITY ORDER. Order matters:
-# more specific patterns (e.g. "invalid user") must be tried before the
-# more general ones, otherwise a word like "invalid" would be captured
-# as the username. Patterns below were chosen after manually inspecting
-# this log's actual message formats (Lab 1, Technique 1).
+# Username extraction patterns
 USERNAME_PATTERNS = [
     r"Failed password for invalid user (\S+) from",
     r"Failed password for (\S+) from",
@@ -67,10 +44,7 @@ USERNAME_PATTERNS = [
     r"Connection closed by authenticating user (\S+)",
 ]
 
-# Event classification. Each event type maps to substrings that identify it.
-# A single log line may match more than one category; counts are
-# independent tallies of phrase occurrences, not a guarantee of unique
-# incidents (see Lab 2 "Critical limitation").
+# Event classification
 EVENT_KEYWORDS = {
     "failed_password":        ["Failed password"],
     "accepted_password":      ["Accepted password"],
@@ -80,16 +54,10 @@ EVENT_KEYWORDS = {
     "session_opened":         ["session opened"],
     "session_closed":         ["session closed"],
     "sudo_command":           ["sudo:"],
-    # sshd's own reverse-DNS (PTR) sanity check: logged whenever the
-    # connecting IP's reverse lookup fails, independent of any password
-    # attempt on that connection. Not on its own evidence of compromise -
-    # a missing PTR record is common and non-malicious - but a second,
-    # independent signal worth cross-referencing against failed/accepted
-    # logins from the same IP.
     "possible_break_in_warning": ["POSSIBLE BREAK-IN ATTEMPT"],
 }
 
-# Pulls the IP out of "...getaddrinfo for unknown.example [IP] failed..."
+# Regex to extract the IP out of log
 BREAK_IN_WARNING_IP_PATTERN = re.compile(r"getaddrinfo for \S+ \[([\d.]+)\] failed")
 
 
@@ -98,26 +66,17 @@ BREAK_IN_WARNING_IP_PATTERN = re.compile(r"getaddrinfo for \S+ \[([\d.]+)\] fail
 # --------------------------------------------------------------------------
 
 def read_log(path: Path) -> list[str]:
-    """Read the raw log file and return a list of lines (no trailing newlines).
-    Assumes UTF-8 encoding and one event per line, consistent with Lab 1/2.
-    """
+    # Read the raw log file
     return path.read_text(encoding="utf-8", errors="replace").splitlines()
 
 
 def extract_ips(line: str) -> list[str]:
-    """Return all IPv4-looking addresses found on the line.
-    Note: this is a syntactic match only - it does not validate octet
-    ranges (0-255) and will not detect IPv6 addresses (Lab 2 limitation).
-    """
+    # Return all IPv4-looking addresses
     return IP_PATTERN.findall(line)
 
 
 def extract_username(line: str) -> str | None:
-    """Try each username pattern in priority order; return the first match.
-    Returns None if no pattern matches, so unmatched lines (sudo lines,
-    CRON lines, etc.) are explicitly excluded rather than silently
-    mis-attributed (Lab 2, Technique 8).
-    """
+    # Return the first username found in the line, or None if no match.
     for pattern in USERNAME_PATTERNS:
         match = re.search(pattern, line)
         if match:
@@ -127,12 +86,7 @@ def extract_username(line: str) -> str | None:
 
 def extract_timestamp(line: str, year: int = ASSUMED_YEAR) -> datetime | None:
     """Parse the first three space-separated tokens (e.g. 'Jul 06 00:01:27')
-    into a datetime, adding an internal assumed year only because Python
-    needs one for sorting/bucketing. The year is not shown in report-facing
-    CSV date labels or figure axes.
-
-    Returns None on any line that doesn't match this format, so the caller
-    can skip it rather than crash (Lab 3, Technique 2).
+    into a datetime. Return None if failed.
     """
     parts = line.split(maxsplit=3)
     if len(parts) < 3:
@@ -145,9 +99,7 @@ def extract_timestamp(line: str, year: int = ASSUMED_YEAR) -> datetime | None:
 
 
 def format_log_day(ts: datetime) -> str:
-    """Return a display label that matches the raw log style and omits year.
-    Example: datetime(2026, 7, 6) -> 'Jul 06'.
-    """
+    """ Convert Datetime to date string E.g datetime(2026, 7, 6) -> 'Jul 06' """
     return ts.strftime("%b %d")
 
 
@@ -166,7 +118,7 @@ def classify_events(lines: list[str]) -> dict[str, int]:
 # --------------------------------------------------------------------------
 
 def save_counter_to_csv(counter: Counter, output_path: Path, header1: str, header2: str) -> None:
-    """Save a Counter to CSV, most common first (Lab 2, Technique 10)."""
+    """Save a Counter to CSV """
     with open(output_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([header1, header2])
@@ -187,7 +139,7 @@ def save_summary_counts(event_counts: dict[str, int], output_path: Path) -> None
 # --------------------------------------------------------------------------
 
 def plot_top_source_ips(failed_ip_counts: Counter, output_path: Path, top_n: int = TOP_N_IPS) -> None:
-    """MANDATORY visualisation: top source IPs by failed authentication attempts."""
+    """ Visualisation 1: top source IPs by failed authentication attempts """
     top_items = failed_ip_counts.most_common(top_n)
     if not top_items:
         return
@@ -209,23 +161,11 @@ def plot_top_source_ips(failed_ip_counts: Counter, output_path: Path, top_n: int
 
 def plot_daily_timeline(lines: list[str], output_path: Path) -> dict:
     """CHOSEN visualisation: daily timeline of failed password attempts,
-    split into (a) the single largest contributing source IP that day and
-    (b) all other sources combined that day.
-
-    Time window = 1 calendar day. This is a methodological choice (Lab 3,
-    Technique 3): a daily window is coarse enough to show which days carry
-    unusually high failure volume, at the cost of hiding *when within the
-    day* those attempts happened (a finer window, e.g. hourly, would be
-    needed for that - see README limitations).
-
-    The split into "top single IP" vs "other sources" is computed
-    dynamically per day (not hard-coded to specific IP addresses), so this
-    script generalises to any comparable log without editing IP values.
-
-    Returns a dict of per-day stats, used to also write a supporting CSV.
+    split into:
+       (a) the single largest contributing source IP that day and
+       (b) all other sources combined that day.
     """
-    # Use datetime.date keys internally for correct sorting, but display
-    # labels without year so the output matches the raw log format.
+    # Use datetime.date keys for sorting
     daily_ip_counts: dict[datetime.date, Counter] = defaultdict(Counter)
 
     for line in lines:
@@ -301,11 +241,11 @@ def main():
     lines = read_log(log_path)
     print(f"Read {len(lines)} lines from {log_path}")
 
-    # --- Event counting ---
+    # Event counting
     event_counts = classify_events(lines)
     save_summary_counts(event_counts, OUTPUT_DIR / "summary_counts.csv")
 
-    # --- IP extraction ---
+    # IP extraction
     failed_ip_counts = Counter()
     accepted_ip_counts = Counter()
     invalid_user_ip_counts = Counter()
@@ -328,7 +268,7 @@ def main():
 
     save_counter_to_csv(failed_ip_counts, OUTPUT_DIR / "top_source_ips.csv", "ip_address", "failed_password_count")
 
-    # --- Username extraction (from Failed password lines only) ---
+    # Username extraction
     failed_username_counts = Counter()
     for line in lines:
         if "Failed password" in line:
@@ -337,7 +277,7 @@ def main():
                 failed_username_counts[user] += 1
     save_counter_to_csv(failed_username_counts, OUTPUT_DIR / "username_counts.csv", "username", "failed_password_count")
 
-    # --- Overlap check: which failed-IPs ever succeeded? (Lab 2, Technique 9 style) ---
+    # Check which failed-IPs ever succeeded?
     overlap_ips = set(failed_ip_counts) & set(accepted_ip_counts)
     with open(OUTPUT_DIR / "ip_overlap.csv", "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
@@ -352,14 +292,14 @@ def main():
                 break_in_warning_ip_counts.get(ip, 0),
             ])
 
-    # --- Visualisation 1 (mandatory) ---
+    # Visualisation 1: Top Source IPs
     plot_top_source_ips(failed_ip_counts, OUTPUT_DIR / "top_source_ips.png")
 
-    # --- Visualisation 2 (chosen) ---
+    # Visualisation 2: Chosen Visualisation 
     timeline_stats = plot_daily_timeline(lines, OUTPUT_DIR / "chosen_visualisation.png")
     save_daily_timeline_csv(timeline_stats, OUTPUT_DIR / "daily_failed_summary.csv")
 
-    # --- Console summary for quick sanity-check ---
+    # Summary Checks
     print("\nEvent counts:", event_counts)
     print("\nTop 5 source IPs by failed password count:")
     for ip, count in failed_ip_counts.most_common(5):
